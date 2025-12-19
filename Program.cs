@@ -1,4 +1,5 @@
 ﻿using Discord;
+using Discord.Net;
 using Discord.WebSocket;
 using System.Text.Json;
 using System.Text;
@@ -7,45 +8,47 @@ Console.OutputEncoding = Encoding.UTF8;
 // Чтение конфигурационного файла
 if (!File.Exists("config.json"))
 {
-    Console.WriteLine("Файл config.json не найден");
+    Log("CRITICAL","Файл config.json не найден");
     return;
 }
-// Десериализация конфигурации
-string jsonString = await File.ReadAllTextAsync("config.json");
 
-var options = new JsonSerializerOptions
+var jsonOptions = new JsonSerializerOptions
 {
     PropertyNameCaseInsensitive = true,
     ReadCommentHandling = JsonCommentHandling.Skip
 };
 
+// Десериализация конфигурации
+string jsonString = await File.ReadAllTextAsync("config.json");
 var config = JsonSerializer.Deserialize<BotConfig>(jsonString);
 // Проверка наличия токена
-if (string.IsNullOrEmpty(config?.Token) || config.TargetUserId == 0)
+if (config == null || string.IsNullOrEmpty(config.Token) || config.TargetUserId == 0)
 {
-    Console.WriteLine("ID = 0 или пустой токен в config.json");
-    Console.WriteLine("Токен не найден внутри config.json");
+    Log("CRITICAL", "Ошибка в config.json. Проверьте Токен и ID.");
     return;
 }
 
 // Настройка клиента Discord
 var socketConfig = new DiscordSocketConfig
 {
-    GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent
+    GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent,
+    LogGatewayIntentWarnings = false
 };
 
 using var client = new DiscordSocketClient(socketConfig);// Создание клиента
 
 // Обработчики событий
-client.Log += (LogMessage log) => 
+client.Log += (LogMessage msg) => 
 {
-    Console.WriteLine(log.ToString());
+    Log(msg.Severity.ToString(), msg.Message ?? msg.Exception?.Message ?? "Unknown");
     return Task.CompletedTask;
 };
 // Событие готовности
 client.Ready += () => 
 {
-    Console.WriteLine($"\nБот подключен. Цель(ID): {config.TargetUserId}, Реакция: {config.ReactionEmoji}\n");
+    Log("INFO", $"Бот авторизован как {client.CurrentUser.Username}");
+    Log("INFO", $"Цель (ID): {config.TargetUserId}");
+    Log("INFO", $"Реакция: {config.ReactionEmoji}");
     return Task.CompletedTask;
 };
 
@@ -59,17 +62,24 @@ client.MessageReceived += async (SocketMessage message) =>
     {
         try
         {
-            Console.WriteLine($"[Detect] Сообщение от {message.Author.Username}. Ставлю реакцию...");
+            Log("DETECT", $"Сообщение от {message.Author.Username} в канале #{message.Channel.Name}");
             
             // Создаем эмодзи из строки в конфиге
             var emoji = new Emoji(config.ReactionEmoji);
             
             // Ставим реакцию
             await message.AddReactionAsync(emoji);
+            Log("SUCCESS", "Реакция поставлена.");
+        }
+        catch (HttpException ex) when (ex.HttpCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            // Специфическая ошибка: Нет прав ставить реакции
+            Log("ERROR", "Нет прав ставить реакции в этом канале/сервере");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Error] Не удалось поставить реакцию: {ex.Message}");
+            // Остальные ошибки
+            Log("ERROR", $"Не удалось среагировать: {ex.Message}");
         }
     }
 };
@@ -82,12 +92,28 @@ try
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"Ошибка: {ex.Message}");
+    Log("CRITICAL", $"Ошибка подключения: {ex.Message}");
     return;
 }
 
 // Бесконечное ожидание
 await Task.Delay(-1);
+// Функция логирования с цветами
+static void Log(string level, string message)
+{
+    switch (level.ToUpper())
+    {
+        case "CRITICAL": Console.ForegroundColor = ConsoleColor.Red; break;
+        case "ERROR":    Console.ForegroundColor = ConsoleColor.DarkRed; break;
+        case "SUCCESS":  Console.ForegroundColor = ConsoleColor.Green; break;
+        case "DETECT":   Console.ForegroundColor = ConsoleColor.Cyan; break;
+        case "INFO":     Console.ForegroundColor = ConsoleColor.White; break;
+        default:         Console.ForegroundColor = ConsoleColor.Gray; break;
+    }
+    
+    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [{level}] {message}]");
+    Console.ResetColor();
+}
 
 class BotConfig // Класс конфигурации бота
 {
